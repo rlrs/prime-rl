@@ -275,15 +275,17 @@ async def custom_init_app_state(
     engine_client: EngineClient,
     state: State,
     args: Namespace,
-    supported_tasks: tuple,
 ):
     """
+    vLLM 0.15.1-specific init_app_state wrapper.
+
     Modifies init_app_state:
     1. Set up the custom OpenAIServingChatWithTokens state.
     2. Monkey-patch to allow updating lora adapters in-place.
     """
     # Setup the regular app state first (in-place)
-    await init_app_state(engine_client, state, args, supported_tasks)
+    await init_app_state(engine_client, state, args)
+    supported_tasks = await engine_client.get_supported_tasks()
 
     # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
     # TODO: Here, we repeat some calls done in init_app_state to be able to
@@ -340,11 +342,13 @@ import vllm.entrypoints.openai.api_server
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
 
 
-def custom_build_app(args: Namespace, supported_tasks: tuple):
+def custom_build_app(args: Namespace):
     """
+    vLLM 0.15.1-specific build_app wrapper.
+
     Wrap build_app to include our custom router.
     """
-    app = _original_build_app(args, supported_tasks)
+    app = _original_build_app(args)
     app.include_router(router)
     return app
 

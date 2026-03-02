@@ -23,7 +23,9 @@ from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpo
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import CPUOffloadOptimizer
-from prime_rl.trainer.runs import Progress, get_multi_run_manager
+from prime_rl.trainer.runs import Progress
+from prime_rl.trainer.transformers_compat import revert_weight_conversion_if_supported
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     save_state_dict,
@@ -407,12 +409,9 @@ class WeightCheckpointManager:
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
         else:
-            # For regular transformers models, revert internal format to original HF hub format
-            from transformers.core_model_loading import revert_weight_conversion
-
             self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")
             start_time = time.perf_counter()
-            state_dict = revert_weight_conversion(model, state_dict)
+            state_dict = revert_weight_conversion_if_supported(model, state_dict)
             self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank

@@ -1,3 +1,6 @@
+from importlib.util import find_spec
+
+
 def transformers_v5_compat():
     """vLLM general plugin: patch transformers v5 config attrs that vLLM 0.16 still expects.
 
@@ -220,6 +223,9 @@ def monkey_patch_tokenize_params_validation():
         - Only rejects if prompt_len > max_model_len
         - Lets the engine naturally cap generation at max_model_len
     """
+    if find_spec("vllm.renderers.params") is None:
+        return
+
     from vllm.exceptions import VLLMValidationError
     from vllm.renderers.params import TokenizeParams
 

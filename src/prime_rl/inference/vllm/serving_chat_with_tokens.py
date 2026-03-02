@@ -60,7 +60,6 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         conversation,
         tokenizer,
         request_metadata: RequestResponseMetadata,
-        reasoning_parser: ReasoningParser | None = None,
     ) -> ErrorResponse | ChatCompletionResponse:
         # We need to override the full_generator to be able to capture the routed experts
         # By default, VLLM does not save the routed experts into ChatCompletionResponse.choices, so we need to capture them manually
@@ -82,7 +81,6 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
             conversation,
             tokenizer,
             request_metadata,
-            reasoning_parser,
         )
 
         if capture and isinstance(response, ChatCompletionResponse):
@@ -236,7 +234,6 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 conversation,
                 tokenizer,
                 request_metadata,
-                reasoning_parser,
             )
 
         try:
@@ -248,7 +245,6 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 conversation,
                 tokenizer,
                 request_metadata,
-                reasoning_parser,
             )
         except GenerationError as e:
             return self._convert_generation_error_to_response(e)
