@@ -2,6 +2,7 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
+from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
@@ -97,8 +98,6 @@ def train(config: SFTConfig):
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
     if parallel_dims.cp_enabled:
-        from ring_flash_attn import substitute_hf_flash_attn
-
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
