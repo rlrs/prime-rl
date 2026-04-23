@@ -130,13 +130,31 @@ def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) ->
     logger.info(f"Froze {num_frozen} parameters in vision encoder")
 
 
-def freeze_moe_router(model: nn.Module) -> None:
+def _get_transformer_layers(model: nn.Module, language_model_override: str | None = None) -> nn.Module:
+    language_model = get_language_model(model, override=language_model_override)
+
+    if hasattr(language_model, "layers"):
+        return language_model.layers
+
+    current = language_model
+    visited = {id(current)}
+    for attr in ("language_model", "model"):
+        nested = getattr(current, attr, None)
+        if nested is None or id(nested) in visited:
+            continue
+        if hasattr(nested, "layers"):
+            return nested.layers
+        visited.add(id(nested))
+
+    raise AttributeError(f"{type(language_model).__name__!s} does not expose transformer layers")
+
+
+def freeze_moe_router(model: nn.Module, language_model_override: str | None = None) -> None:
     """Freeze MoE router parameters to maintain stable routing during training."""
     logger = get_logger()
-    language_model = get_language_model(model)
     num_frozen = 0
 
-    for layer in language_model.layers:
+    for layer in _get_transformer_layers(model, language_model_override):
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
         if mlp is None:
             continue
@@ -163,11 +181,13 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 
 def get_load_balance_stats(
-    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+    model: nn.Module,
+    reset_stats: bool = True,
+    try_to_avoid_padding_experts: bool = True,
+    language_model_override: str | None = None,
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
-    language_model = get_language_model(model)
-    for transformer_block in language_model.layers:
+    for transformer_block in _get_transformer_layers(model, language_model_override):
         # This is necessary for models that have mixed dense layers
         block_mlp = getattr(transformer_block, "mlp", None)
         if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
@@ -599,27 +619,26 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
-def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
-    language_model = get_language_model(model)
-    for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
+def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig, language_model_override: str | None = None):
+    transformer_layers = _get_transformer_layers(model, language_model_override)
+    for layer_id, (layer_name, transformer_block) in enumerate(transformer_layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-        language_model.layers.register_module(layer_name, transformer_block)
+        transformer_layers.register_module(layer_name, transformer_block)
     get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, language_model_override: str | None = None):
     torch._dynamo.config.capture_scalar_outputs = True
-    language_model = get_language_model(model)
-    for layer_id in range(len(language_model.layers)):
+    transformer_layers = _get_transformer_layers(model, language_model_override)
+    for layer_id in range(len(transformer_layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        transformer_layers[layer_id].compile(fullgraph=compile_config.fullgraph)
+    get_logger().info(f"Compiled {len(transformer_layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
-def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
-    language_model = get_language_model(model)
-    for transformer_block in language_model.layers:
+def apply_ep(model: nn.Module, parallel_dims: ParallelDims, language_model_override: str | None = None):
+    for transformer_block in _get_transformer_layers(model, language_model_override):
         block_mlp = getattr(transformer_block, "mlp", None)
         if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
             parallelize_module(
@@ -716,11 +735,13 @@ def setup_model(
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
 
+    language_model_override = config.vlm.language_model_attr if config.vlm is not None else None
+
     if config.freeze_moe_router:
-        freeze_moe_router(model)
+        freeze_moe_router(model, language_model_override=language_model_override)
 
     if parallel_dims.ep_enabled:
-        apply_ep(model, parallel_dims)
+        apply_ep(model, parallel_dims, language_model_override=language_model_override)
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
@@ -728,9 +749,9 @@ def setup_model(
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
-        apply_ac(model, config.ac)
+        apply_ac(model, config.ac, language_model_override=language_model_override)
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        apply_compile(model, config.compile, language_model_override=language_model_override)
 
     setup_fsdp(model, config, parallel_dims)
 

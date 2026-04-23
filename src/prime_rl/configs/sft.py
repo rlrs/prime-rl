@@ -65,6 +65,10 @@ class SFTDataConfig(BaseDataConfig):
     name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
         "PrimeIntellect/Reverse-Text-SFT"
     )
+    load_method: Annotated[
+        Literal["hf", "disk"],
+        Field(description="How to load the dataset: via datasets.load_dataset or datasets.load_from_disk."),
+    ] = "hf"
     subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
     splits: Annotated[list[str] | None, Field(description="Splits to use from the HF dataset.")] = None
     probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each subset/split.")] = (

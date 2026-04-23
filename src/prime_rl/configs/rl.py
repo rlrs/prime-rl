@@ -202,6 +202,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
             description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
         ),
     ] = 1
+    num_judge_nodes: Annotated[int, Field(ge=0, description="Number of judge inference nodes.")] = 0
     num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
@@ -236,6 +237,12 @@ class RLConfig(BaseConfig):
         InferenceConfig | None,
         Field(
             description="The inference config. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."
+        ),
+    ] = None
+    judge_inference: Annotated[
+        InferenceConfig | None,
+        Field(
+            description="Judge inference config. Used only by LUMI-specific multi-node templates when judge nodes are allocated."
         ),
     ] = None
 
@@ -355,6 +362,13 @@ class RLConfig(BaseConfig):
                 raise ValueError(
                     "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
+                )
+            if self.deployment.num_judge_nodes > 0 and self.judge_inference is None:
+                raise ValueError("Must configure judge_inference when using multi-node deployment with judge nodes.")
+            if self.deployment.num_judge_nodes == 0 and self.judge_inference is not None:
+                raise ValueError(
+                    "Cannot configure judge_inference with num_judge_nodes = 0. "
+                    "Either set num_judge_nodes > 0 or remove the judge_inference config."
                 )
         return self
 

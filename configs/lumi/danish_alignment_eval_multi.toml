@@ -1,0 +1,78 @@
+output_dir = "/flash/project_465002183/andreas/eval/multi"
+input_path = "/workdir/eval/manual_eval_prompts_da.jsonl"
+
+[model_template]
+max_model_len = 4096
+
+[model_template.vlm]
+vision_encoder_attr = "model.vision_tower"
+language_model_attr = "model.language_model"
+
+[[models]]
+label = "baseline"
+name = "/flash/project_465002183/andreas/.cache/huggingface/hub/models--google--gemma-3-4b-it/snapshots/093f9f388b31de276ce2de164bdc2081324b9767"
+skip_generation = true
+
+[[models]]
+label = "step_200"
+name = "/flash/project_465002183/prime-rl/outputs/danish-alignment-lumi-multi-node/weights/step_200"
+skip_generation = true
+
+[[models]]
+label = "step_500"
+name = "/flash/project_465002183/prime-rl/outputs/danish-alignment-lumi-multi-node/weights/step_500"
+skip_generation = true
+
+[[models]]
+label = "step_1000"
+name = "/flash/project_465002183/prime-rl/outputs/danish-alignment-lumi-multi-node/weights/step_1000"
+skip_generation = true
+
+[generation]
+temperature = 0.7
+top_p = 1.0
+max_tokens = 4096
+api_key = "EMPTY"
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.parallel]
+tp = 8
+
+[judge.model]
+name = "mistralai/Mistral-Nemo-Instruct-2407"
+max_model_len = 4096
+
+[judge.inference]
+gpu_memory_utilization = 0.9
+
+[judge.inference.parallel]
+tp = 8
+
+[judge.scoring]
+temperature = 0.2
+max_tokens = 1024
+parse_fail_score = 3.0
+api_key = "EMPTY"
+
+[comparisons]
+pairs = [
+    ["baseline", "step_200"],
+    ["baseline", "step_500"],
+    ["baseline", "step_1000"],
+    ["step_500", "step_1000"],
+]
+
+[server]
+port = 8000
+
+[deployment]
+gpus_per_node = 8
+
+[slurm]
+job_name = "danish-alignment-eval-multi"
+project_dir = "/scratch/project_465002183/andreas/git/prime-rl"
+partition = "standard-g"
+account = "project_465002183"
+time = "03:00:00"

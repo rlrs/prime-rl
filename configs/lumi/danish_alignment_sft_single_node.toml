@@ -1,0 +1,55 @@
+max_steps = 32
+output_dir = "/flash/project_465002183/prime-rl/outputs/danish_alignment_sft"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 8
+num_gpus = 8
+
+[model]
+name = "google/gemma-3-4b-it"
+attn = "sdpa"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[model.vlm]
+vision_encoder_attr = "model.vision_tower"
+language_model_attr = "model.language_model"
+
+[data]
+type = "sft"
+name = "/flash/project_465002183/andreas/data/lima_sft"
+load_method = "disk"
+splits = ["train"]
+batch_size = 32
+micro_batch_size = 1
+seq_len = 4096
+
+[data.loss_mask]
+assistant = true
+user = false
+system = false
+tool = false
+
+[optim]
+type = "adamw"
+lr = 2e-6
+weight_decay = 0.1
+betas1 = 0.9
+betas2 = 0.99
+
+[ckpt]
+interval = 100
+
+[wandb]
+project = "danish-alignment"
+name = "danish-alignment-sft-warmup"
+offline = true
+
+[slurm]
+job_name = "danish-alignment-sft"
+project_dir = "."
+partition = "standard-g"
+account = "project_465002183"
+time = "24:00:00"
+template_path = "src/prime_rl/templates/lumi/single_node_sft.sbatch.j2"

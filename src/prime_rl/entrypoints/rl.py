@@ -27,6 +27,7 @@ RL_SBATCH = "rl.sbatch"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
+JUDGE_INFERENCE_TOML = "judge_inference.toml"
 TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
@@ -62,6 +63,14 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
+
+    if config.judge_inference is not None:
+        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
+        with open(output_dir / JUDGE_INFERENCE_TOML, "wb") as f:
+            tomli_w.dump(
+                config.judge_inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"),
+                f,
+            )
 
     teacher_inference = getattr(config, "teacher_inference", None)
     if teacher_inference is not None:
@@ -430,6 +439,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             wandb_shared=config.wandb is not None and config.wandb.shared,
         )
     else:
+        judge_inference = config.judge_inference
         script = template.render(
             **config.slurm.template_vars,
             is_disaggregated=False,
@@ -438,6 +448,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
+            num_judge_nodes=config.deployment.num_judge_nodes,
             nodes_per_infer_replica=config.deployment.num_infer_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
@@ -447,6 +458,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
+            judge_enabled=judge_inference is not None,
+            judge_tp=judge_inference.parallel.tp if judge_inference else 1,
+            judge_enable_expert_parallel=judge_inference.enable_expert_parallel if judge_inference else False,
+            judge_data_parallel_rpc_port=judge_inference.data_parallel_rpc_port if judge_inference else 29610,
+            judge_port=judge_inference.server.port if judge_inference else 8001,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
         )
@@ -459,6 +475,7 @@ def format_log_message(
     trainer_log: str,
     orchestrator_log: str | None,
     inference_log: str | None,
+    judge_log: str | None,
     env_log_dir: Path,
     train_env_names: list[str],
     eval_env_names: list[str],
@@ -474,6 +491,8 @@ def format_log_message(
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {orchestrator_log}")
     if inference_log:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {inference_log}")
+    if judge_log:
+        log_lines.append(f"{i1}{'Judge:':<{col}}tail -F {judge_log}")
     log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*/*.log")
     log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*/*.log")
     for name in train_env_names:
@@ -506,6 +525,7 @@ def rl_slurm(config: RLConfig):
             trainer_log=f"{log_dir}/trainer.stdout",
             orchestrator_log=f"{log_dir}/orchestrator.stdout",
             inference_log=f"{log_dir}/inference.stdout",
+            judge_log=None,
             env_log_dir=env_log_dir,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
@@ -520,10 +540,12 @@ def rl_slurm(config: RLConfig):
         eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
 
         has_infer = config.deployment.num_infer_nodes > 0
+        has_judge = config.deployment.num_judge_nodes > 0
         log_message = format_log_message(
             trainer_log=f"{slurm_log_dir}/latest_train_node_rank_0.log",
             orchestrator_log=f"{slurm_log_dir}/latest_orchestrator.log" if has_infer else None,
             inference_log=f"{slurm_log_dir}/latest_infer_node_rank_0.log" if has_infer else None,
+            judge_log=f"{slurm_log_dir}/latest_judge_node_rank_0.log" if has_judge else None,
             env_log_dir=env_log_dir,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,

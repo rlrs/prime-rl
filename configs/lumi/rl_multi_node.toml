@@ -1,0 +1,35 @@
+toml_files = ["../../examples/reverse_text/rl.toml"]
+
+output_dir = "/flash/project_465002183/prime-rl/outputs/lumi-rl-multi-node"
+max_steps = 5
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[trainer.model]
+attn = "sdpa"
+
+[orchestrator]
+use_token_client = false
+
+[inference]
+gpu_memory_utilization = 0.8
+
+[inference.parallel]
+tp = 1
+dp = 8
+
+[wandb]
+offline = true
+shared = false
+
+[slurm]
+job_name = "prime-rl-lumi-multi-node"
+project_dir = "."
+partition = "standard-g"
+account = "project_465002183"
+time = "02:00:00"
+template_path = "src/prime_rl/templates/lumi/multi_node_rl.sbatch.j2"

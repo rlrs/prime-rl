@@ -1,10 +1,11 @@
 import json
 import uuid
+from pathlib import Path
 from collections import defaultdict
 from typing import Literal, TypedDict, cast
 
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, DatasetDict, interleave_datasets, load_dataset, load_from_disk
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -459,6 +460,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
 
 def setup_and_interleave_datasets(
     dataset_name: str,
+    load_method: Literal["hf", "disk"],
     subsets_and_splits: list[tuple[str | None, str]],
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
@@ -466,9 +468,25 @@ def setup_and_interleave_datasets(
 ) -> Dataset:
     logger = get_logger()
     datasets = []
+    disk_dataset = None
+    if load_method == "disk":
+        dataset_path = Path(dataset_name)
+        logger.debug(f"Loading dataset from disk at {dataset_path}")
+        disk_dataset = load_from_disk(str(dataset_path))
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
+        if load_method == "disk":
+            if subset is not None:
+                raise ValueError("subsets are not supported when data.load_method = 'disk'")
+            assert disk_dataset is not None
+            if isinstance(disk_dataset, DatasetDict):
+                dataset = cast(Dataset, disk_dataset[split])
+            else:
+                if split != "train":
+                    raise ValueError("Single-split disk datasets only support split = 'train'")
+                dataset = cast(Dataset, disk_dataset)
+        else:
+            dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -494,6 +512,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     if config.subsets is None and config.splits is None:
         return setup_and_interleave_datasets(
             dataset_name=config.name,
+            load_method=config.load_method,
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -502,6 +521,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
         return setup_and_interleave_datasets(
             dataset_name=config.name,
+            load_method=config.load_method,
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -510,6 +530,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
         return setup_and_interleave_datasets(
             dataset_name=config.name,
+            load_method=config.load_method,
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -519,6 +540,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
         return setup_and_interleave_datasets(
             dataset_name=config.name,
+            load_method=config.load_method,
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,

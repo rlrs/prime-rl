@@ -1,3 +1,4 @@
+from inspect import signature
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -8,7 +9,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse
@@ -21,6 +21,11 @@ from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+try:
+    from vllm.entrypoints.cli.serve import run_api_server_worker_proc
+except ImportError:
+    from vllm.v1.utils import run_api_server_worker_proc
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import get_logger
@@ -189,6 +194,46 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
+def _build_serving_chat_kwargs(
+    args: Namespace,
+    state: State,
+    request_logger: RequestLogger | None,
+    resolved_chat_template: str | None,
+    serving_chat_cls: type[OpenAIServingChatWithTokens] = OpenAIServingChatWithTokens,
+) -> dict[str, Any]:
+    params = signature(serving_chat_cls.__init__).parameters
+    chat_kwargs: dict[str, Any] = {
+        "request_logger": request_logger,
+        "chat_template": resolved_chat_template,
+        "chat_template_content_format": args.chat_template_content_format,
+        "trust_request_chat_template": args.trust_request_chat_template,
+        "return_tokens_as_token_ids": args.return_tokens_as_token_ids,
+        "enable_auto_tools": args.enable_auto_tool_choice,
+        "exclude_tools_when_tool_choice_none": args.exclude_tools_when_tool_choice_none,
+        "tool_parser": args.tool_call_parser,
+        "reasoning_parser": args.structured_outputs_config.reasoning_parser,
+        "enable_prompt_tokens_details": args.enable_prompt_tokens_details,
+        "enable_force_include_usage": args.enable_force_include_usage,
+        "enable_log_outputs": args.enable_log_outputs,
+    }
+
+    optional_arg_names = (
+        "default_chat_template_kwargs",
+        "enable_log_deltas",
+        "log_error_stack",
+    )
+    for name in optional_arg_names:
+        if hasattr(args, name) and name in params:
+            chat_kwargs[name] = getattr(args, name)
+
+    if "openai_serving_render" in params:
+        if not hasattr(state, "openai_serving_render"):
+            raise RuntimeError("vLLM requires `openai_serving_render`, but init_app_state did not populate it.")
+        chat_kwargs["openai_serving_render"] = state.openai_serving_render
+
+    return chat_kwargs
+
+
 @router.post("/pause")
 async def pause(request: Request):
     await engine_client(request).pause_generation(mode="keep", clear_cache=False)
@@ -278,40 +323,17 @@ async def custom_init_app_state(
     supported_tasks: tuple,
 ):
     """
-    Modifies init_app_state:
-    1. Set up the custom OpenAIServingChatWithTokens state.
-    2. Monkey-patch to allow updating lora adapters in-place.
+    Extend vLLM init_app_state with the custom chat-with-tokens handler.
     """
-    # Setup the regular app state first (in-place)
     await init_app_state(engine_client, state, args, supported_tasks)
 
-    # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
-    # TODO: Here, we repeat some calls done in init_app_state to be able to
-    # correctly set up the OpenAIServingChatWithTokens state, which is a bit
-    # brittle, and could probably be made nicer
     if args.enable_log_requests:
         request_logger = RequestLogger(max_log_len=args.max_log_len)
     else:
         request_logger = None
 
     resolved_chat_template = load_chat_template(args.chat_template)
-
-    chat_kwargs = dict(
-        request_logger=request_logger,
-        chat_template=resolved_chat_template,
-        chat_template_content_format=args.chat_template_content_format,
-        trust_request_chat_template=args.trust_request_chat_template,
-        return_tokens_as_token_ids=args.return_tokens_as_token_ids,
-        enable_auto_tools=args.enable_auto_tool_choice,
-        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
-        tool_parser=args.tool_call_parser,
-        reasoning_parser=args.structured_outputs_config.reasoning_parser,
-        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
-        enable_force_include_usage=args.enable_force_include_usage,
-        enable_log_outputs=args.enable_log_outputs,
-    )
-    if hasattr(args, "log_error_stack"):
-        chat_kwargs["log_error_stack"] = args.log_error_stack
+    chat_kwargs = _build_serving_chat_kwargs(args, state, request_logger, resolved_chat_template)
 
     serving_chat = OpenAIServingChatWithTokens(
         engine_client,
@@ -337,24 +359,28 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
 
 import vllm.entrypoints.cli.serve
 import vllm.entrypoints.openai.api_server
+import vllm.v1.utils
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
 
 
-def custom_build_app(args: Namespace, supported_tasks: tuple):
+def custom_build_app(*args, **kwargs):
     """
     Wrap build_app to include our custom router.
     """
-    app = _original_build_app(args, supported_tasks)
+    app = _original_build_app(*args, **kwargs)
     app.include_router(router)
     return app
 
 
-# Also monkey patch run_api_server_worker_proc for multi-api-server mode
-# This is needed because worker processes spawned by run_multi_api_server
-# re-import modules and would otherwise use the original run_server_worker
+# Monkey patch API server worker entrypoints for multi-API-server mode.
+# Older vLLM exposed this via vllm.entrypoints.cli.serve while newer vLLM
+# uses vllm.v1.utils.APIServerProcessManager -> vllm.v1.utils.run_api_server_worker_proc.
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
 vllm.entrypoints.openai.api_server.build_app = custom_build_app
-vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
+if hasattr(vllm.entrypoints.cli.serve, "run_api_server_worker_proc"):
+    vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
+if hasattr(vllm.v1.utils, "run_api_server_worker_proc"):
+    vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
